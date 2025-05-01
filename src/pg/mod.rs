@@ -162,33 +162,34 @@ impl AsyncConnection for AsyncPgConnection {
     type TransactionManager = AnsiTransactionManager;
 
     async fn establish(database_url: &str) -> ConnectionResult<Self> {
-        let mut instrumentation = DynInstrumentation::default_instrumentation();
-        instrumentation.on_connection_event(InstrumentationEvent::start_establish_connection(
-            database_url,
-        ));
-        let instrumentation = Arc::new(std::sync::Mutex::new(instrumentation));
-        let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
-            .await
-            .map_err(ErrorHelper)?;
-
-        let (error_rx, shutdown_tx) = drive_connection(connection);
-
-        let r = Self::setup(
-            client,
-            Some(error_rx),
-            Some(shutdown_tx),
-            Arc::clone(&instrumentation),
-        )
-        .await;
-
-        instrumentation
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .on_connection_event(InstrumentationEvent::finish_establish_connection(
-                database_url,
-                r.as_ref().err(),
-            ));
-        r
+        // let mut instrumentation = DynInstrumentation::default_instrumentation();
+        // instrumentation.on_connection_event(InstrumentationEvent::start_establish_connection(
+        //     database_url,
+        // ));
+        // let instrumentation = Arc::new(std::sync::Mutex::new(instrumentation));
+        // let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+        //     .await
+        //     .map_err(ErrorHelper)?;
+        // 
+        // let (error_rx, shutdown_tx) = drive_connection(connection);
+        // 
+        // let r = Self::setup(
+        //     client,
+        //     Some(error_rx),
+        //     Some(shutdown_tx),
+        //     Arc::clone(&instrumentation),
+        // )
+        // .await;
+        // 
+        // instrumentation
+        //     .lock()
+        //     .unwrap_or_else(|e| e.into_inner())
+        //     .on_connection_event(InstrumentationEvent::finish_establish_connection(
+        //         database_url,
+        //         r.as_ref().err(),
+        //     ));
+        // r
+        unimplemented!("unimplemented")
     }
 
     fn load<'conn, 'query, T>(&'conn mut self, source: T) -> Self::LoadFuture<'conn, 'query>
@@ -396,23 +397,23 @@ impl AsyncPgConnection {
 
     /// Constructs a new `AsyncPgConnection` from an existing [`tokio_postgres::Client`] and
     /// [`tokio_postgres::Connection`]
-    pub async fn try_from_client_and_connection<S>(
-        client: tokio_postgres::Client,
-        conn: tokio_postgres::Connection<tokio_postgres::Socket, S>,
-    ) -> ConnectionResult<Self>
-    where
-        S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
-    {
-        let (error_rx, shutdown_tx) = drive_connection(conn);
-
-        Self::setup(
-            client,
-            Some(error_rx),
-            Some(shutdown_tx),
-            Arc::new(std::sync::Mutex::new(DynInstrumentation::none())),
-        )
-        .await
-    }
+    // pub async fn try_from_client_and_connection<S>(
+    //     client: tokio_postgres::Client,
+    //     conn: tokio_postgres::Connection<tokio_postgres::Socket, S>,
+    // ) -> ConnectionResult<Self>
+    // where
+    //     S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
+    // {
+    //     let (error_rx, shutdown_tx) = drive_connection(conn);
+    // 
+    //     Self::setup(
+    //         client,
+    //         Some(error_rx),
+    //         Some(shutdown_tx),
+    //         Arc::new(std::sync::Mutex::new(DynInstrumentation::none())),
+    //     )
+    //     .await
+    // }
 
     async fn setup(
         conn: tokio_postgres::Client,
@@ -877,29 +878,29 @@ async fn drive_future<R>(
     }
 }
 
-fn drive_connection<S>(
-    conn: tokio_postgres::Connection<tokio_postgres::Socket, S>,
-) -> (
-    broadcast::Receiver<Arc<tokio_postgres::Error>>,
-    oneshot::Sender<()>,
-)
-where
-    S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
-{
-    let (error_tx, error_rx) = tokio::sync::broadcast::channel(1);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-
-    tokio::spawn(async move {
-        match futures_util::future::select(shutdown_rx, conn).await {
-            Either::Left(_) | Either::Right((Ok(_), _)) => {}
-            Either::Right((Err(e), _)) => {
-                let _ = error_tx.send(Arc::new(e));
-            }
-        }
-    });
-
-    (error_rx, shutdown_tx)
-}
+// fn drive_connection<S>(
+//     conn: tokio_postgres::Connection<tokio_postgres::Socket, S>,
+// ) -> (
+//     broadcast::Receiver<Arc<tokio_postgres::Error>>,
+//     oneshot::Sender<()>,
+// )
+// where
+//     S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
+// {
+//     let (error_tx, error_rx) = tokio::sync::broadcast::channel(1);
+//     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+// 
+//     tokio::spawn(async move {
+//         match futures_util::future::select(shutdown_rx, conn).await {
+//             Either::Left(_) | Either::Right((Ok(_), _)) => {}
+//             Either::Right((Err(e), _)) => {
+//                 let _ = error_tx.send(Arc::new(e));
+//             }
+//         }
+//     });
+// 
+//     (error_rx, shutdown_tx)
+// }
 
 #[cfg(any(
     feature = "deadpool",
