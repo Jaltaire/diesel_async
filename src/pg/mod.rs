@@ -892,7 +892,18 @@ where
     let (error_tx, error_rx) = tokio::sync::broadcast::channel(1);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
+    #[cfg(not(target_arch = "wasm32"))]
     tokio::spawn(async move {
+        match futures_util::future::select(shutdown_rx, conn).await {
+            Either::Left(_) | Either::Right((Ok(_), _)) => {}
+            Either::Right((Err(e), _)) => {
+                let _ = error_tx.send(Arc::new(e));
+            }
+        }
+    });
+
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_futures::spawn_local(async move {
         match futures_util::future::select(shutdown_rx, conn).await {
             Either::Left(_) | Either::Right((Ok(_), _)) => {}
             Either::Right((Err(e), _)) => {
