@@ -43,8 +43,7 @@ features = [
   "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
 ]
 git = "https://github.com/Jaltaire/diesel"
-rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
-#branch = "master"
+branch = "master"
 
 [dev-dependencies]
 tokio = { version = "1.12.0", features = ["rt", "macros", "rt-multi-thread"] }
@@ -59,14 +58,12 @@ features = [
   "chrono"
 ]
 git = "https://github.com/Jaltaire/diesel"
-rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
-#branch = "master"
+branch = "master"
 
 [dev-dependencies.diesel_migrations]
 #version = "2.2.0"
 git = "https://github.com/Jaltaire/diesel"
-rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
-#branch = "master"
+branch = "master"
 
 [features]
 default = []
