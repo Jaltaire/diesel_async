@@ -37,13 +37,14 @@ mobc = { version = ">=0.7,<0.10", optional = true }
 scoped-futures = { version = "0.1", features = ["std"] }
 
 [dependencies.diesel]
-version = "~2.2.0"
+#version = "~2.2.0"
 default-features = false
 features = [
   "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
 ]
-git = "https://github.com/diesel-rs/diesel"
-branch = "master"
+git = "https://github.com/Jaltaire/diesel"
+rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
+#branch = "master"
 
 [dev-dependencies]
 tokio = { version = "1.12.0", features = ["rt", "macros", "rt-multi-thread"] }
@@ -52,18 +53,20 @@ chrono = "0.4"
 assert_matches = "1.0.1"
 
 [dev-dependencies.diesel]
-version = "~2.2.0"
+#version = "~2.2.0"
 default-features = false
 features = [
   "chrono"
 ]
-git = "https://github.com/diesel-rs/diesel"
-branch = "master"
+git = "https://github.com/Jaltaire/diesel"
+rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
+#branch = "master"
 
 [dev-dependencies.diesel_migrations]
-version = "2.2.0"
-git = "https://github.com/diesel-rs/diesel"
-branch = "master"
+#version = "2.2.0"
+git = "https://github.com/Jaltaire/diesel"
+rev = "55ca02bcc66f920bc6b83625333fd1e2cbf8f5fc"
+#branch = "master"
 
 [features]
 default = []
