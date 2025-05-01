@@ -97,7 +97,9 @@ use diesel::backend::Backend;
 use diesel::connection::{CacheSize, Instrumentation};
 use diesel::query_builder::{AsQuery, QueryFragment, QueryId};
 use diesel::row::Row;
-use diesel::{ConnectionResult, QueryResult};
+use diesel::QueryResult;
+#[cfg(not(target_arch = "wasm32"))]
+use diesel::ConnectionResult;
 use futures_core::future::BoxFuture;
 use futures_core::Stream;
 use futures_util::FutureExt;
@@ -207,6 +209,7 @@ pub trait AsyncConnection: AsyncConnectionCore + Sized {
     /// The argument to this method and the method's behavior varies by backend.
     /// See the documentation for that backend's connection class
     /// for details about what it accepts and how it behaves.
+    #[cfg(not(target_arch = "wasm32"))]
     fn establish(database_url: &str) -> impl Future<Output = ConnectionResult<Self>> + Send;
 
     /// Executes the given function inside of a database transaction
