@@ -266,6 +266,15 @@ async fn load_prepared(
     stmt: Statement,
     binds: Vec<ToSqlHelper>,
 ) -> QueryResult<BoxStream<'static, QueryResult<PgRow>>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bt = std::backtrace::Backtrace::capture();
+        worker::console_log!("load_prepared (backtrace): {}", bt);
+
+        worker::console_log!("stmt: {:?}", stmt);
+        worker::console_log!("binds: {:?}", binds);
+    }
+    
     let res = conn.query_raw(&stmt, binds).await.map_err(ErrorHelper)?;
 
     Ok(res
@@ -284,6 +293,14 @@ async fn execute_prepared(
         .map(|b| b as &(dyn ToSql + Sync))
         .collect::<Vec<_>>();
 
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bt = std::backtrace::Backtrace::capture();
+        worker::console_log!("execute_prepared (backtrace): {}", bt);
+
+        worker::console_log!("stmt: {:?}", stmt);
+        worker::console_log!("binds: {:?}", binds);
+    }
     let res = tokio_postgres::Client::execute(&conn, &stmt, &binds as &[_])
         .await
         .map_err(ErrorHelper)?;
@@ -406,6 +423,12 @@ impl AsyncPgConnection {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         T: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
     {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bt = std::backtrace::Backtrace::capture();
+            worker::console_log!("try_from_client_and_connection (backtrace): {}", bt);
+        }
+
         let (error_rx, shutdown_tx) = drive_connection(conn);
     
         Self::setup(
@@ -807,6 +830,11 @@ async fn lookup_type(
     type_name: String,
     raw_connection: &tokio_postgres::Client,
 ) -> QueryResult<(u32, u32)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let bt = std::backtrace::Backtrace::capture();
+        worker::console_log!("lookup_type (backtrace): {}", bt);
+    }
     let r = if let Some(schema) = schema.as_ref() {
         raw_connection
             .query_one(
