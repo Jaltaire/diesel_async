@@ -29,6 +29,7 @@ use futures_util::TryFutureExt;
 use futures_util::{Future, FutureExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
@@ -402,7 +403,7 @@ impl AsyncPgConnection {
         conn: tokio_postgres::Connection<S, T>,
     ) -> ConnectionResult<Self>
     where
-        S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         T: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
     {
         let (error_rx, shutdown_tx) = drive_connection(conn);
@@ -886,7 +887,7 @@ fn drive_connection<S, T>(
     oneshot::Sender<()>,
 )
 where
-    S: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     T: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
 {
     let (error_tx, error_rx) = tokio::sync::broadcast::channel(1);
