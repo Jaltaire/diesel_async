@@ -301,6 +301,7 @@ impl AsyncConnection for AsyncPgConnection {
             Some(notification_rx),
             Some(shutdown_tx),
             Arc::clone(&instrumentation),
+            false, // use named prepared statements by default
         )
         .await;
 
@@ -552,6 +553,28 @@ impl AsyncPgConnection {
             Arc::new(std::sync::Mutex::new(
                 DynInstrumentation::default_instrumentation(),
             )),
+            false,
+        )
+        .await
+    }
+
+    /// Construct a new `AsyncPgConnection` instance from an existing [`tokio_postgres::Client`]
+    /// with unnamed prepared statements enabled.
+    ///
+    /// This is useful when using connection poolers like Cloudflare Hyperdrive that may not
+    /// properly support named prepared statement caching across pooled connections.
+    pub async fn try_from_with_unnamed_statements(
+        conn: tokio_postgres::Client,
+    ) -> ConnectionResult<Self> {
+        Self::setup(
+            conn,
+            None,
+            None,
+            None,
+            Arc::new(std::sync::Mutex::new(
+                DynInstrumentation::default_instrumentation(),
+            )),
+            true,
         )
         .await
     }
@@ -576,6 +599,35 @@ impl AsyncPgConnection {
             Arc::new(std::sync::Mutex::new(
                 DynInstrumentation::default_instrumentation(),
             )),
+            false,
+        )
+        .await
+    }
+
+    /// Constructs a new `AsyncPgConnection` from an existing [`tokio_postgres::Client`] and
+    /// [`tokio_postgres::Connection`] with unnamed prepared statements enabled.
+    ///
+    /// This is useful when using connection poolers like Cloudflare Hyperdrive that may not
+    /// properly support named prepared statement caching across pooled connections.
+    pub async fn try_from_client_and_connection_with_unnamed_statements<S, T>(
+        client: tokio_postgres::Client,
+        conn: tokio_postgres::Connection<S, T>,
+    ) -> ConnectionResult<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T: tokio_postgres::tls::TlsStream + Unpin + Send + 'static,
+    {
+        let (error_rx, notification_rx, shutdown_tx) = drive_connection(conn);
+
+        Self::setup(
+            client,
+            Some(error_rx),
+            Some(notification_rx),
+            Some(shutdown_tx),
+            Arc::new(std::sync::Mutex::new(
+                DynInstrumentation::default_instrumentation(),
+            )),
+            true,
         )
         .await
     }
@@ -586,6 +638,7 @@ impl AsyncPgConnection {
         notification_rx: Option<mpsc::UnboundedReceiver<QueryResult<diesel::pg::PgNotification>>>,
         shutdown_channel: Option<oneshot::Sender<()>>,
         instrumentation: Arc<std::sync::Mutex<DynInstrumentation>>,
+        use_unnamed_statements: bool,
     ) -> ConnectionResult<Self> {
         let mut conn = Self {
             conn: Arc::new(conn),
@@ -596,7 +649,7 @@ impl AsyncPgConnection {
             notification_rx,
             shutdown_channel,
             instrumentation,
-            use_unnamed_statements: false,
+            use_unnamed_statements,
         };
         conn.set_config_options()
             .await
