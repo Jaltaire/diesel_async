@@ -31,8 +31,8 @@ use futures_util::{FutureExt, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::types::Type;
 use tokio_postgres::Statement;
@@ -173,8 +173,8 @@ pub struct AsyncPgConnection {
     connection_future: Option<broadcast::Receiver<Arc<tokio_postgres::Error>>>,
     notification_rx: Option<mpsc::UnboundedReceiver<QueryResult<diesel::pg::PgNotification>>>,
     shutdown_channel: Option<oneshot::Sender<()>>,
-    // a sync mutex is fine here as we only hold it for a really short time
     instrumentation: Arc<std::sync::Mutex<DynInstrumentation>>,
+    use_unnamed_statements: bool,
 }
 
 impl SimpleAsyncConnection for AsyncPgConnection {
@@ -253,9 +253,13 @@ impl AsyncConnectionCore for &AsyncPgConnection {
         T::Query: QueryFragment<Self::Backend> + QueryId + 'query,
     {
         let query = source.as_query();
-        let load_future = self.with_prepared_statement(query, load_prepared);
-
-        self.run_with_connection_future(load_future)
+        if self.use_unnamed_statements {
+            let load_future = self.with_unnamed_statement(query, load_unnamed);
+            self.run_with_connection_future(load_future)
+        } else {
+            let load_future = self.with_prepared_statement(query, load_prepared);
+            self.run_with_connection_future(load_future)
+        }
     }
 
     fn execute_returning_count<'conn, 'query, T>(
@@ -265,8 +269,13 @@ impl AsyncConnectionCore for &AsyncPgConnection {
     where
         T: QueryFragment<Self::Backend> + QueryId + 'query,
     {
-        let execute = self.with_prepared_statement(source, execute_prepared);
-        self.run_with_connection_future(execute)
+        if self.use_unnamed_statements {
+            let execute = self.with_unnamed_statement(source, execute_unnamed);
+            self.run_with_connection_future(execute)
+        } else {
+            let execute = self.with_prepared_statement(source, execute_prepared);
+            self.run_with_connection_future(execute)
+        }
     }
 }
 
@@ -381,6 +390,64 @@ async fn execute_prepared(
         .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))
 }
 
+async fn load_unnamed(
+    conn: Arc<tokio_postgres::Client>,
+    sql: String,
+    binds: Vec<ToSqlHelper>,
+) -> QueryResult<BoxStream<'static, QueryResult<PgRow>>> {
+    let params = binds
+        .into_iter()
+        .map(|b| {
+            let ty = type_from_oid(&b.0)?;
+            Ok((b, ty))
+        })
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let res = conn
+        .query_typed_raw(&sql, params)
+        .await
+        .map_err(ErrorHelper)?;
+
+    Ok(res
+        .map_err(|e| diesel::result::Error::from(ErrorHelper(e)))
+        .map_ok(PgRow::new)
+        .boxed())
+}
+
+async fn execute_unnamed(
+    conn: Arc<tokio_postgres::Client>,
+    sql: String,
+    binds: Vec<ToSqlHelper>,
+) -> QueryResult<usize> {
+    use std::pin::pin;
+
+    let params = binds
+        .iter()
+        .map(|b| {
+            let ty = type_from_oid(&b.0)?;
+            Ok((b as &(dyn ToSql + Sync), ty))
+        })
+        .collect::<QueryResult<Vec<_>>>()?;
+
+    let stream = conn
+        .query_typed_raw(&sql, params)
+        .await
+        .map_err(ErrorHelper)?;
+
+    let mut pinned_stream = pin!(stream);
+
+    let mut count: u64 = 0;
+    while let Some(_row) = pinned_stream.try_next().await.map_err(ErrorHelper)? {
+        count += 1;
+    }
+
+    let rows_affected = pinned_stream.rows_affected().unwrap_or(count);
+
+    rows_affected
+        .try_into()
+        .map_err(|e| diesel::result::Error::DeserializationError(Box::new(e)))
+}
+
 #[inline(always)]
 fn update_transaction_manager_status<T>(
     query_result: QueryResult<T>,
@@ -488,7 +555,7 @@ impl AsyncPgConnection {
         )
         .await
     }
-    
+
     /// Constructs a new `AsyncPgConnection` from an existing [`tokio_postgres::Client`] and
     /// [`tokio_postgres::Connection`]
     pub async fn try_from_client_and_connection<S, T>(
@@ -529,6 +596,7 @@ impl AsyncPgConnection {
             notification_rx,
             shutdown_channel,
             instrumentation,
+            use_unnamed_statements: false,
         };
         conn.set_config_options()
             .await
@@ -539,6 +607,43 @@ impl AsyncPgConnection {
     /// Constructs a cancellation token that can later be used to request cancellation of a query running on the connection associated with this client.
     pub fn cancel_token(&self) -> tokio_postgres::CancelToken {
         self.conn.cancel_token()
+    }
+
+    /// Enable or disable the use of unnamed prepared statements.
+    ///
+    /// When enabled, all queries will use the PostgreSQL unnamed (anonymous) prepared
+    /// statement instead of creating named prepared statements. This is particularly
+    /// useful when using connection poolers like Cloudflare Hyperdrive that may not
+    /// properly support named prepared statement caching across pooled connections.
+    ///
+    /// Named prepared statements (e.g., "s0", "s1", etc.) are cached per-connection
+    /// in PostgreSQL. When a connection pooler assigns different physical connections
+    /// to the same logical connection, previously prepared statements may not exist,
+    /// resulting in errors like "prepared statement 's0' does not exist".
+    ///
+    /// By using unnamed statements, each query is parsed and executed in a single
+    /// round-trip without relying on statement caching, which is compatible with
+    /// connection poolers operating in transaction mode.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let mut conn = AsyncPgConnection::establish(&database_url).await?;
+    /// conn.set_prepared_statement_mode(PreparedStatementMode::Unnamed);
+    /// // All subsequent queries will use unnamed prepared statements
+    /// ```
+    ///
+    /// Note: Using unnamed statements may have a slight performance impact for
+    /// repeated queries since the query must be parsed on each execution.
+    /// However, this is often negligible compared to the network latency in
+    /// distributed environments like Cloudflare Workers.
+    pub fn set_use_unnamed_prepared_statements(&mut self, value: bool) {
+        self.use_unnamed_statements = value;
+    }
+
+    /// Returns whether the connection is configured to use unnamed prepared statements.
+    pub fn use_unnamed_prepared_statements(&self) -> bool {
+        self.use_unnamed_statements
     }
 
     async fn set_config_options(&mut self) -> QueryResult<()> {
@@ -712,6 +817,128 @@ impl AsyncPgConnection {
                 .map(|(meta, bind)| ToSqlHelper(meta, bind))
                 .collect::<Vec<_>>();
                 callback(raw_connection, stmt.clone(), binds).await
+            };
+            let res = res.await;
+            let mut tm = tm.lock().await;
+            let r = update_transaction_manager_status(res, &mut tm);
+            instrumentation
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .on_connection_event(InstrumentationEvent::finish_query(
+                    &StrQueryHelper::new(&sql),
+                    r.as_ref().err(),
+                ));
+
+            r
+        }
+        .boxed()
+    }
+
+    fn with_unnamed_statement<'a, T, F, R>(
+        &self,
+        query: T,
+        callback: fn(Arc<tokio_postgres::Client>, String, Vec<ToSqlHelper>) -> F,
+    ) -> BoxFuture<'a, QueryResult<R>>
+    where
+        T: QueryFragment<diesel::pg::Pg> + QueryId,
+        F: Future<Output = QueryResult<R>> + Send + 'a,
+        R: Send,
+    {
+        self.record_instrumentation(InstrumentationEvent::start_query(&diesel::debug_query(
+            &query,
+        )));
+
+        let mut query_builder = PgQueryBuilder::default();
+        let bind_data = construct_bind_data(&query);
+
+        self.with_unnamed_statement_after_sql_built(
+            callback,
+            query.to_sql(&mut query_builder, &Pg),
+            query_builder,
+            bind_data,
+        )
+    }
+
+    fn with_unnamed_statement_after_sql_built<'a, F, R>(
+        &self,
+        callback: fn(Arc<tokio_postgres::Client>, String, Vec<ToSqlHelper>) -> F,
+        to_sql_result: QueryResult<()>,
+        query_builder: PgQueryBuilder,
+        bind_data: BindData,
+    ) -> BoxFuture<'a, QueryResult<R>>
+    where
+        F: Future<Output = QueryResult<R>> + Send + 'a,
+        R: Send,
+    {
+        let raw_connection = self.conn.clone();
+        let metadata_cache = self.metadata_cache.clone();
+        let tm = self.transaction_state.clone();
+        let instrumentation = self.instrumentation.clone();
+        let BindData {
+            collect_bind_result,
+            fake_oid_locations,
+            generated_oids,
+            mut bind_collector,
+        } = bind_data;
+
+        async move {
+            let sql = to_sql_result.map(|_| query_builder.finish())?;
+            let res = async {
+                collect_bind_result?;
+
+                if let Some(ref unresolved_types) = generated_oids {
+                    let metadata_cache = &mut *metadata_cache.lock().await;
+                    let mut real_oids = HashMap::new();
+
+                    for ((schema, lookup_type_name), (fake_oid, fake_array_oid)) in
+                        unresolved_types
+                    {
+                        let cache_key = PgMetadataCacheKey::new(
+                            schema.as_deref().map(Into::into),
+                            lookup_type_name.into(),
+                        );
+                        let real_metadata = if let Some(type_metadata) =
+                            metadata_cache.lookup_type(&cache_key)
+                        {
+                            type_metadata
+                        } else {
+                            let type_metadata =
+                                lookup_type(schema.clone(), lookup_type_name.clone(), &raw_connection)
+                                    .await?;
+                            metadata_cache.store_type(cache_key, type_metadata);
+
+                            PgTypeMetadata::from_result(Ok(type_metadata))
+                        };
+                        let (real_oid, real_array_oid) = unwrap_oids(&real_metadata);
+                        real_oids.extend([(*fake_oid, real_oid), (*fake_array_oid, real_array_oid)]);
+                    }
+
+                    for m in &mut bind_collector.metadata {
+                        let (oid, array_oid) = unwrap_oids(m);
+                        *m = PgTypeMetadata::new(
+                            real_oids.get(&oid).copied().unwrap_or(oid),
+                            real_oids.get(&array_oid).copied().unwrap_or(array_oid)
+                        );
+                    }
+
+                    for (bind_index, byte_index) in fake_oid_locations {
+                        replace_fake_oid(&mut bind_collector.binds, &real_oids, bind_index, byte_index)
+                            .ok_or_else(|| {
+                                Error::SerializationError(
+                                    format!("diesel_async failed to replace a type OID serialized in bind value {bind_index}").into(),
+                                )
+                            })?;
+                    }
+                }
+
+                let binds = bind_collector
+                    .metadata
+                    .into_iter()
+                    .zip(bind_collector.binds)
+                    .map(|(meta, bind)| ToSqlHelper(meta, bind))
+                    .collect::<Vec<_>>();
+
+                callback(raw_connection, sql.clone(), binds).await
             };
             let res = res.await;
             let mut tm = tm.lock().await;
